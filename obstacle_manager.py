@@ -195,60 +195,116 @@ class ObstacleManager:
         return segments
     
     def _segment_scan_line(self, p1: Tuple[float, float], p2: Tuple[float, float],
-                          obstacles: List[Obstacle], 
+                          obstacles: List[Obstacle],
                           boundary_corners: Optional[List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
         """
-        將穿過障礙物的掃描線分段
-        
+        將穿過障礙物的掃描線分段（遞歸處理多個障礙物）
+
         策略：
         1. 計算掃描線與障礙物的交點
         2. 生成繞行路徑（沿著障礙物安全邊界）
-        3. 返回: [p1, 進入繞行點, 離開繞行點, p2]
-        
+        3. 遞歸處理剩餘的障礙物
+        4. 返回: [p1, 繞行點們..., p2]
+
         返回: 分段後的航點列表
         """
-        # 處理第一個障礙物（如果有多個，優先處理最接近起點的）
-        obstacle = obstacles[0]
-        
-        # 計算線段與圓的交點
-        intersection_points = self._calculate_line_circle_intersection(p1, p2, obstacle)
-        
-        if len(intersection_points) < 2:
-            # 沒有足夠的交點，可能只是擦過，返回原始線段
+        if not obstacles:
             return [p1, p2]
-        
+
+        # 找到最接近起點的障礙物
+        closest_obstacle = None
+        min_dist_to_start = float('inf')
+
+        for obs in obstacles:
+            # 計算障礙物中心到起點的距離
+            dist = self.calculate_distance(p1, obs.center)
+            if dist < min_dist_to_start:
+                min_dist_to_start = dist
+                closest_obstacle = obs
+
+        if closest_obstacle is None:
+            return [p1, p2]
+
+        # 計算線段與最近障礙物的交點
+        intersection_points = self._calculate_line_circle_intersection(p1, p2, closest_obstacle)
+
+        if len(intersection_points) < 2:
+            # 沒有足夠的交點，嘗試處理其他障礙物
+            remaining_obstacles = [o for o in obstacles if o != closest_obstacle]
+            if remaining_obstacles:
+                return self._segment_scan_line(p1, p2, remaining_obstacles, boundary_corners)
+            return [p1, p2]
+
         # 生成繞行路徑（沿著障礙物安全邊界的切線）
-        detour_points = self._generate_tangent_detour(p1, p2, obstacle, intersection_points[0], intersection_points[1])
-        
+        detour_points = self._generate_tangent_detour(p1, p2, closest_obstacle,
+                                                      intersection_points[0], intersection_points[1])
+
         if not detour_points:
             logger.warning(f"繞行點生成失敗，掃描線長度可能太短")
+            # 嘗試處理其他障礙物
+            remaining_obstacles = [o for o in obstacles if o != closest_obstacle]
+            if remaining_obstacles:
+                return self._segment_scan_line(p1, p2, remaining_obstacles, boundary_corners)
             return [p1, p2]
-        
+
         # 驗證繞行點是否在邊界內
         valid_detour = []
         for i, dp in enumerate(detour_points):
             if boundary_corners is None:
-                # 如果沒有邊界限制，直接接受
                 valid_detour.append(dp)
-                logger.info(f"繞行點{i+1}: 無邊界限制，直接接受")
             elif self.point_in_polygon(dp, boundary_corners):
                 valid_detour.append(dp)
-                logger.info(f"繞行點{i+1}: 在邊界內")
             else:
-                logger.warning(f"繞行點{i+1}: ({dp[0]:.6f}, {dp[1]:.6f}) 超出邊界，嘗試調整")
-                # 嘗試將點拉回到線段方向上
-                # 這樣可以保持部分繞行效果
-        
+                logger.warning(f"繞行點{i+1}: ({dp[0]:.6f}, {dp[1]:.6f}) 超出邊界")
+                # 使用備用策略：直接在線段上選點
+                if i == 0:  # 進入點：在30%位置
+                    fallback = self._interpolate_point(p1, p2, 0.30)
+                else:  # 離開點：在70%位置
+                    fallback = self._interpolate_point(p1, p2, 0.70)
+
+                if self.point_in_polygon(fallback, boundary_corners):
+                    valid_detour.append(fallback)
+
         if not valid_detour:
-            # 無法生成有效繞行路徑，記錄詳細信息
-            logger.warning(f"無法生成有效繞行路徑: p1={p1}, p2={p2}, 障礙物中心={obstacle.center}")
-            logger.warning(f"交點數量: {len(intersection_points)}, 繞行點數量: {len(detour_points)}")
-            logger.warning(f"boundary_corners提供: {boundary_corners is not None}")
+            logger.warning(f"無法生成有效繞行路徑")
+            # 嘗試處理其他障礙物
+            remaining_obstacles = [o for o in obstacles if o != closest_obstacle]
+            if remaining_obstacles:
+                return self._segment_scan_line(p1, p2, remaining_obstacles, boundary_corners)
             return [p1, p2]
-        
-        logger.info(f"成功生成繞行路徑: {len(valid_detour)}個繞行點")
-        # 返回完整的分段路徑：起點 → 繞行點 → 終點
-        return [p1] + valid_detour + [p2]
+
+        # 構建當前障礙物的繞行路徑
+        current_path = [p1] + valid_detour + [p2]
+
+        # 檢查是否還有其他障礙物需要處理
+        remaining_obstacles = [o for o in obstacles if o != closest_obstacle]
+        if not remaining_obstacles:
+            logger.info(f"成功生成繞行路徑: {len(valid_detour)}個繞行點")
+            return current_path
+
+        # 遞歸處理剩餘障礙物：檢查每個線段是否與其他障礙物碰撞
+        final_path = [current_path[0]]
+        for i in range(len(current_path) - 1):
+            seg_start = current_path[i]
+            seg_end = current_path[i + 1]
+
+            # 檢查這個線段是否與剩餘障礙物碰撞
+            colliding = []
+            for obs in remaining_obstacles:
+                if self.line_intersects_circle(seg_start, seg_end, obs.center, obs.effective_radius):
+                    colliding.append(obs)
+
+            if colliding:
+                # 遞歸處理這個線段
+                sub_path = self._segment_scan_line(seg_start, seg_end, colliding, boundary_corners)
+                # 添加子路徑（排除起點，因為已經在final_path中）
+                final_path.extend(sub_path[1:])
+            else:
+                # 無碰撞，直接添加終點
+                final_path.append(seg_end)
+
+        logger.info(f"完整繞行路徑: 處理{len(obstacles)}個障礙物, 生成{len(final_path)}個航點")
+        return final_path
     
     def _calculate_line_circle_intersection(self, p1: Tuple[float, float], 
                                            p2: Tuple[float, float],
@@ -315,101 +371,167 @@ class ObstacleManager:
     
     def _generate_tangent_detour(self, p1: Tuple[float, float], p2: Tuple[float, float],
                                  obstacle: Obstacle,
-                                 inter1: Tuple[float, float], 
+                                 inter1: Tuple[float, float],
                                  inter2: Tuple[float, float]) -> List[Tuple[float, float]]:
         """
-        生成沿著障礙物邊界的繞行路徑（切線法）
-        
+        生成沿著障礙物邊界的規律繞行路徑（擴展版 - 從交點外開始）
+
         策略：
-        1. 計算掃描線方向
-        2. 確定繞行方向（左側或右側）
-        3. 在障礙物圓周上選擇繞行點
-        4. 確保繞行點在安全範圍外
-        
-        返回: [進入繞行點, 離開繞行點]
+        1. 在交點之外開始繞行，確保不穿越障礙物
+        2. 沿著安全邊界的圓周走
+        3. 生成規律的圓弧路徑
+
+        返回: [進入點, 中間點們..., 離開點]
         """
         cx, cy = obstacle.center
-        radius = obstacle.effective_radius * 1.2  # 增加20%安全邊距
-        
-        # 使用與waypoint_generator相同的座標轉換
+        # 安全半徑：在effective_radius基礎上額外增加0.5米作為緩衝
+        safe_radius = obstacle.effective_radius + 0.5
+
+        # 座標轉換函數
         cosLat0 = math.cos(math.radians(cx))
-        
+
         def to_meters(lat, lon):
-            # 與waypoint_generator.py的project_and_rotate一致
             x = (lon - cy) * self.earth_radius_m * cosLat0
             y = (lat - cx) * self.earth_radius_m
             return x, y
-        
+
         def to_latlon(x, y):
-            # 與waypoint_generator.py的rotate_back_to_geographic一致
             lat = y / self.earth_radius_m + cx
             lon = x / (self.earth_radius_m * cosLat0) + cy
             return lat, lon
-        
-        # 計算掃描線的方向向量
+
+        # 轉換到公尺座標系（以障礙物中心為原點）
         x1, y1 = to_meters(p1[0], p1[1])
         x2, y2 = to_meters(p2[0], p2[1])
-        
+
+        # 計算線段方向
         dx = x2 - x1
         dy = y2 - y1
         length = math.sqrt(dx * dx + dy * dy)
-        
-        if length < 0.001:
+
+        if length < 1.0:
             return []
-        
-        # 單位方向向量
-        ux = dx / length
-        uy = dy / length
-        
-        # 計算垂直向量（用於決定繞行方向）
-        perp_x = -uy  # 向左垂直
-        perp_y = ux
-        
-        # 計算線段中點到障礙物中心的向量
+
+        # 計算兩個交點對應的角度
+        xi1, yi1 = to_meters(inter1[0], inter1[1])
+        xi2, yi2 = to_meters(inter2[0], inter2[1])
+
+        angle1 = math.atan2(yi1, xi1)
+        angle2 = math.atan2(yi2, xi2)
+
+        # 確定繞行方向（選擇遠離線段的方向）
+        # 計算線段中點到圓心的向量
         mid_x = (x1 + x2) / 2
         mid_y = (y1 + y2) / 2
-        to_center_x = 0 - mid_x  # 障礙物中心在原點
-        to_center_y = 0 - mid_y
-        
-        # 生成兩個候選繞行方向
-        detour_offset = radius
-        
-        # 方向1：左側繞行
-        detour1_x = perp_x * detour_offset
-        detour1_y = perp_y * detour_offset
-        
-        # 方向2：右側繞行
-        detour2_x = -perp_x * detour_offset
-        detour2_y = -perp_y * detour_offset
-        
-        # 選擇遠離障礙物中心的方向
-        # 計算兩個繞行方向與"遠離中心"方向的點積
-        dot1 = -detour1_x * to_center_x - detour1_y * to_center_y
-        dot2 = -detour2_x * to_center_x - detour2_y * to_center_y
-        
-        if dot1 > dot2:
-            detour_x, detour_y = detour1_x, detour1_y
+
+        # 線段方向的垂直向量
+        perp_x = -dy / length
+        perp_y = dx / length
+
+        # 判斷應該走哪一側的圓弧（選擇遠離線段的那一側）
+        # 測試點：圓心向外的方向
+        dot_product = perp_x * (-mid_x) + perp_y * (-mid_y)
+
+        if dot_product > 0:
+            # 需要確保angle1到angle2是正向（逆時針）
+            if angle2 < angle1:
+                angle2 += 2 * math.pi
         else:
-            detour_x, detour_y = detour2_x, detour2_y
+            # 需要確保angle1到angle2是負向（順時針）
+            if angle1 < angle2:
+                angle1 += 2 * math.pi
+            # 交換，確保總是按照遠離線段的方向走
+            angle1, angle2 = angle2, angle1
+
+        # 擴展角度範圍：在交點之外額外延伸15度
+        angle_extension = math.radians(15)
+        angle1_extended = angle1 - angle_extension
+        angle2_extended = angle2 + angle_extension
+
+        # 計算擴展後的圓弧角度差
+        angle_diff = abs(angle2_extended - angle1_extended)
+
+        # 計算航點數量（每15度一個點）
+        num_points = max(3, int(angle_diff / math.radians(15)))
+
+        # 生成沿著圓周的規律航點（從擴展的起點到擴展的終點）
+        detour_points = []
+        for i in range(num_points + 1):
+            t = i / num_points
+            angle = angle1_extended + (angle2_extended - angle1_extended) * t
+
+            # 在安全半徑上生成點
+            x = safe_radius * math.cos(angle)
+            y = safe_radius * math.sin(angle)
+
+            point = to_latlon(x, y)
+            detour_points.append(point)
+
+        logger.info(f"規律繞行: 圓弧{math.degrees(angle_diff):.1f}度 (擴展+30度), "
+                   f"{len(detour_points)}個航點, 半徑={safe_radius:.1f}m")
+
+        return detour_points
+    
+    
+    def _project_point_to_segment(self, point: Tuple[float, float], 
+                                   p1: Tuple[float, float], 
+                                   p2: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+        """
+        將點投影到線段上，返回最近的點
         
-        # 生成進入和離開繞行的航點
-        # 在掃描線的30%和70%位置設置繞行點，確保繞行更平滑
-        t_entry = 0.3
-        t_exit = 0.7
+        參數:
+            point: 要投影的點
+            p1, p2: 線段的兩個端點
         
-        entry_x = x1 + ux * length * t_entry + detour_x
-        entry_y = y1 + uy * length * t_entry + detour_y
+        返回:
+            線段上最接近point的點，如果線段退化為點則返回None
+        """
+        lat1, lon1 = p1
+        lat2, lon2 = p2
+        px, py = point
         
-        exit_x = x1 + ux * length * t_exit + detour_x
-        exit_y = y1 + uy * length * t_exit + detour_y
+        # 向量計算
+        dx = lon2 - lon1
+        dy = lat2 - lat1
         
-        # 轉換回地理座標
-        entry_point = to_latlon(entry_x, entry_y)
-        exit_point = to_latlon(exit_x, exit_y)
+        # 線段長度平方
+        length_sq = dx * dx + dy * dy
         
-        logger.info(f"繞行點生成: 掃描線長度={length:.2f}m, 繞行偏移={detour_offset:.2f}m")
+        if length_sq < 1e-10:  # 線段退化為點
+            return None
         
-        return [entry_point, exit_point]
+        # 計算投影參數 t
+        t = ((px - lon1) * dx + (py - lat1) * dy) / length_sq
+        
+        # 限制在線段範圍內
+        t = max(0.0, min(1.0, t))
+        
+        # 計算投影點
+        proj_lon = lon1 + t * dx
+        proj_lat = lat1 + t * dy
+        
+        return (proj_lat, proj_lon)
+    
+    def _interpolate_point(self, p1: Tuple[float, float], 
+                          p2: Tuple[float, float], 
+                          t: float) -> Tuple[float, float]:
+        """
+        在兩點之間進行線性插值
+        
+        參數:
+            p1, p2: 線段的兩個端點
+            t: 插值參數，0表示p1，1表示p2
+        
+        返回:
+            插值點
+        """
+        lat1, lon1 = p1
+        lat2, lon2 = p2
+        
+        lat = lat1 + t * (lat2 - lat1)
+        lon = lon1 + t * (lon2 - lon1)
+        
+        return (lat, lon)
     
     def point_in_polygon(self, point: Tuple[float, float], 
                         polygon: List[Tuple[float, float]]) -> bool:

@@ -134,34 +134,34 @@ class ObstacleUIExtension:
                    f"半徑{self.default_radius}m")
     
     def create_obstacle_display(self, obstacle: Obstacle):
-        """創建障礙物顯示（修復顏色格式）"""
+        """創建障礙物顯示（紫色系）"""
         try:
             lat, lon = obstacle.center
             
-            # 標記
+            # 標記 - 紫色禁止圖標
             obstacle.marker = self.app.map.set_marker(
                 lat, lon,
-                text=f"🛑\n{obstacle.radius:.1f}m",
-                marker_color_circle="#8B0000",
-                marker_color_outside="#8B0000"
+                text=f"🚫\n{obstacle.radius:.1f}m",
+                marker_color_circle="#8B5CF6",  # 紫色
+                marker_color_outside="#8B5CF6"
             )
             
-            # 安全範圍圓圈（使用純色，不帶透明度）
+            # 安全範圍圓圈（紫色外圈 - 淺紫色）
             safe_points = self.generate_circle_points(lat, lon, obstacle.effective_radius, 36)
             obstacle.safe_circle = self.app.map.set_polygon(
                 safe_points,
-                fill_color="#FFCC99",  # 淺橘色替代半透明
-                outline_color="#FF8C00",
-                border_width=1
+                fill_color="#D8BFD8",  # 淺紫色（Thistle）
+                outline_color="#9370DB",  # 中紫色
+                border_width=2
             )
             
-            # 障礙物圓圈（使用純色）
+            # 障礙物圓圈（紫色內圈 - 深紫色）
             circle_points = self.generate_circle_points(lat, lon, obstacle.radius, 36)
             obstacle.circle = self.app.map.set_polygon(
                 circle_points,
-                fill_color="#CD5C5C",  # 紅色替代半透明
-                outline_color="#8B0000",
-                border_width=2
+                fill_color="#8B7AB8",  # 深紫色
+                outline_color="#6A5ACD",  # 藍紫色（SlateBlue）
+                border_width=3
             )
             
             # 加入paths以支持縮放
@@ -209,26 +209,26 @@ class ObstacleUIExtension:
             lat, lon = obstacle.center
             obstacle.marker = self.app.map.set_marker(
                 lat, lon,
-                text=f"🛑\n{obstacle.radius:.1f}m",
-                marker_color_circle="#8B0000",
-                marker_color_outside="#8B0000"
+                text=f"🚫\n{obstacle.radius:.1f}m",
+                marker_color_circle="#8B5CF6",  # 紫色
+                marker_color_outside="#8B5CF6"
             )
             
-            # 重新創建圓圈（使用純色）
+            # 重新創建圓圈（紫色系）
             safe_points = self.generate_circle_points(lat, lon, obstacle.effective_radius, 36)
             obstacle.safe_circle = self.app.map.set_polygon(
                 safe_points,
-                fill_color="#FFCC99",
-                outline_color="#FF8C00",
-                border_width=1
+                fill_color="#D8BFD8",  # 淺紫色（Thistle）
+                outline_color="#9370DB",  # 中紫色
+                border_width=2
             )
             
             circle_points = self.generate_circle_points(lat, lon, obstacle.radius, 36)
             obstacle.circle = self.app.map.set_polygon(
                 circle_points,
-                fill_color="#CD5C5C",
-                outline_color="#8B0000",
-                border_width=2
+                fill_color="#8B7AB8",  # 深紫色
+                outline_color="#6A5ACD",  # 藍紫色（SlateBlue）
+                border_width=3
             )
             
             # 重新加入paths

@@ -37,8 +37,8 @@ class DronePathPlannerApp(tk.Tk):
         self.bind_events()
         self._preview_after_id = None
         
-        # 延遲初始化地圖
-        self.after(100, self.initialize_map)
+        # 延遲初始化地圖（增加延迟以确保UI完全加载）
+        self.after(500, self.initialize_map)
     
     def setup_window(self):
         """設定視窗"""
@@ -659,11 +659,16 @@ class DronePathPlannerApp(tk.Tk):
                 waypoint_lines, waypoints = self.waypoint_generator.generate_complete_mission(
                     region_corners, params, idx, sub_count, start_from_left, loiter_time
                 )
-                
+
                 # 應用障礙物避讓（如果有障礙物UI擴展）
                 if self.obstacle_ui_extension and waypoints:
                     waypoints = self.obstacle_ui_extension.apply_obstacle_avoidance(waypoints, region_corners)
-                
+
+                    # 重新生成避障後的航點文件（修復導出問題）
+                    waypoint_lines = self.waypoint_generator.waypoints_to_qgc_format(
+                        waypoints, params, idx, sub_count, loiter_time
+                    )
+
                 waypoint_results.append((waypoint_lines, waypoints, loiter_time))
                 prev_waypoints = waypoints
                 
